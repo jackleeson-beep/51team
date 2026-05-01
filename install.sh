@@ -12,26 +12,21 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 PORT="${MCP_BRIDGE_PORT:-9876}"
 BIN_DIR="${HOME}/.local/bin"
 
-# ── [1/6] Prerequisites ──
-echo "[1/6] 检查依赖..."
+# ── [1/5] Prerequisites ──
+echo "[1/5] 检查依赖..."
 command -v node >/dev/null 2>&1 || { echo "❌ 需要 Node.js ≥ 18"; exit 1; }
 command -v tmux >/dev/null 2>&1 || { echo "❌ 需要 tmux: brew install tmux"; exit 1; }
 echo "  ✅ Node $(node -v)  ·  tmux $(tmux -V)"
 
-# ── [2/6] npm ──
-echo "[2/6] 安装依赖..."
-cd "$DIR" && npm install --silent 2>&1 | tail -1
-echo "  ✅ npm packages"
-
-# ── [3/6] CLI to PATH ──
-echo "[3/6] 安装 CLI..."
+# ── [2/5] CLI to PATH ──
+echo "[2/5] 安装 CLI..."
 chmod +x "$DIR/51team" "$DIR/team-up.sh"
 mkdir -p "$BIN_DIR"
 ln -sf "$DIR/51team" "$BIN_DIR/51team"
 echo "  ✅ 51team → ${BIN_DIR}/51team"
 
-# ── [4/6] LaunchAgent ──
-echo "[4/6] 安装 LaunchAgent..."
+# ── [3/5] LaunchAgent ──
+echo "[3/5] 安装 LaunchAgent..."
 LAUNCH_DIR="${HOME}/Library/LaunchAgents"
 mkdir -p "$LAUNCH_DIR"
 NODE_PATH="$(command -v node)"
@@ -74,8 +69,8 @@ launchctl bootout "gui/$(id -u)/com.51team.router" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$LAUNCH_DIR/com.51team.router.plist" 2>/dev/null || true
 echo "  ✅ Router 开机自启已设置"
 
-# ── [5/6] MCP config ──
-echo "[5/6] 配置 MCP..."
+# ── [4/5] MCP config ──
+echo "[4/5] 配置 MCP..."
 MCP_FILE="${HOME}/.claude/.mcp.json"
 if [ ! -f "$MCP_FILE" ]; then
   echo '{"mcpServers": {}}' > "$MCP_FILE"
@@ -93,8 +88,8 @@ fs.writeFileSync('$MCP_FILE', JSON.stringify(config, null, 2) + '\n');
 console.log('  ✅ MCP 配置已写入 ~/.claude/.mcp.json');
 "
 
-# ── [6/6] Start Router ──
-echo "[6/6] 启动 Router..."
+# ── [5/5] Start Router ──
+echo "[5/5] 启动 Router..."
 "$BIN_DIR/51team" up
 
 echo ""

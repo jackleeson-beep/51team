@@ -7,7 +7,5 @@
   "scripts": {
     "start": "node server-http.js"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
-  }
+  "dependencies": {}
 }

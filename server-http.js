@@ -7,9 +7,6 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
 
 // Logging: write to file + stderr
 const LOG_DIR = join(homedir(), ".claude", "51team");
@@ -38,11 +35,6 @@ import {
 import { sessionExists, notifyAgent } from "./tmux.js";
 
 const PORT = process.env.MCP_BRIDGE_PORT || 9876;
-
-const mcp = new McpServer({
-  name: "51team",
-  version: "2.0.0",
-});
 
 // ═══════════════════════════════════════════
 //  Tool handlers (shared by MCP + /api/call)
@@ -77,22 +69,30 @@ const handlers = {
     if (agentNames.length === 0) return { ok: false, text: "没有已注册的 Agent" };
 
     const results = [];
+    let notifyOk = 0;
+    let notifyFail = 0;
     if (to === "all") {
       const targets = agentNames.filter((n) => n !== from);
       if (targets.length === 0) return { ok: false, text: "没有其他 Agent 可广播" };
       for (const targetName of targets) {
         sendMessage(from, targetName, content, topic);
         const target = agents[targetName];
-        if (target) notifyAgent(target.tmuxSession, from, topic, content);
+        if (target) {
+          const ok = notifyAgent(target.tmuxSession, from, topic, content);
+          if (ok) notifyOk++; else notifyFail++;
+        }
         results.push(targetName);
       }
     } else {
       if (!agents[to]) return { ok: false, text: `Agent "${to}" 未注册。已注册: ${agentNames.join(", ")}` };
       sendMessage(from, to, content, topic);
-      notifyAgent(agents[to].tmuxSession, from, topic, content);
+      const ok = notifyAgent(agents[to].tmuxSession, from, topic, content);
+      if (ok) notifyOk++; else notifyFail++;
       results.push(to);
     }
-    return { ok: true, text: `已送达: ${results.join(", ")}`, detail: results };
+    const statusParts = [`已送达: ${results.join(", ")}`];
+    if (notifyFail > 0) statusParts.push(`(tmux 通知: ${notifyOk} ✓, ${notifyFail} ✗)`);
+    return { ok: true, text: statusParts.join(" "), detail: results };
   },
 
   async check_messages({ agent_name }) {
@@ -120,102 +120,137 @@ const handlers = {
 };
 
 // ═══════════════════════════════════════════
-//  MCP Tools (wrapping handlers)
+//  Tool definitions (for tools/list response)
 // ═══════════════════════════════════════════
 
-mcp.registerTool("register_agent", {
-  description: "注册当前 Agent 到通讯路由。绑定自己所在的 tmux session。",
-  inputSchema: z.object({
-    agent_name: z.string(), tmux_session: z.string(),
-  }),
-}, async (args) => {
-  const r = await handlers.register_agent(args);
-  return { content: [{ type: "text", text: (r.ok ? "✅ " : "⚠️ ") + r.text }] };
-});
+const toolDefs = [
+  { name: "register_agent", description: "注册当前 Agent 到通讯路由。绑定自己所在的 tmux session。", inputSchema: { type: "object", properties: { agent_name: { type: "string" }, tmux_session: { type: "string" } }, required: ["agent_name", "tmux_session"] } },
+  { name: "unregister_agent", description: "注销 Agent。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
+  { name: "send_message", description: "向其他 Agent 发送消息。to='all' 广播。务必填写 from 标明身份。", inputSchema: { type: "object", properties: { from: { type: "string" }, to: { type: "string" }, topic: { type: "string" }, content: { type: "string" } }, required: ["from", "to", "content"] } },
+  { name: "check_messages", description: "检查未读消息。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
+  { name: "read_messages", description: "读取未读消息全文，自动标记已读。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
+  { name: "list_agents", description: "列出所有已注册 Agent 及在线状态。", inputSchema: { type: "object", properties: {}, required: [] } },
+  { name: "heartbeat", description: "发送心跳以维持在线状态。每 2 分钟调用一次，否则 5 分钟后自动注销。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
+  { name: "clear_all", description: "清除所有 Agent 和消息（用于测试重置）。", inputSchema: { type: "object", properties: {}, required: [] } },
+];
 
-mcp.registerTool("unregister_agent", {
-  description: "注销 Agent。",
-  inputSchema: z.object({ agent_name: z.string() }),
-}, async (args) => {
-  const r = await handlers.unregister_agent(args);
-  return { content: [{ type: "text", text: r.text }] };
-});
-
-mcp.registerTool("send_message", {
-  description: "向其他 Agent 发送消息。to='all' 广播。务必填写 from 标明身份。",
-  inputSchema: z.object({
-    from: z.string(), to: z.string(), topic: z.string().optional(), content: z.string(),
-  }),
-}, async (args) => {
-  const r = await handlers.send_message(args);
-  return { content: [{ type: "text", text: (r.ok ? "📤 " : "⚠️ ") + r.text }] };
-});
-
-mcp.registerTool("check_messages", {
-  description: "检查未读消息。",
-  inputSchema: z.object({ agent_name: z.string() }),
-}, async (args) => {
-  const r = await handlers.check_messages(args);
-  return { content: [{ type: "text", text: r.text + (r.summary ? "\n" + r.summary.join("\n") : "") }] };
-});
-
-mcp.registerTool("read_messages", {
-  description: "读取未读消息全文，自动标记已读。",
-  inputSchema: z.object({ agent_name: z.string() }),
-}, async (args) => {
-  const r = await handlers.read_messages(args);
-  return { content: [{ type: "text", text: r.text }] };
-});
-
-mcp.registerTool("list_agents", {
-  description: "列出所有已注册 Agent 及在线状态。",
-  inputSchema: z.object({}),
-}, async (args) => {
-  const r = await handlers.list_agents(args);
-  const list = r.agents?.map((a) => `${a.online ? "🟢" : "🔴"} ${a.name} (${a.session})`).join("\n") || "";
-  return { content: [{ type: "text", text: `📋 ${r.count} Agent:\n${list}` }] };
-});
-
-mcp.registerTool("heartbeat", {
-  description: "发送心跳以维持在线状态。每 60 秒调用一次，否则 5 分钟后自动注销。",
-  inputSchema: z.object({ agent_name: z.string() }),
-}, async (args) => {
-  const r = await handlers.heartbeat(args);
-  return { content: [{ type: "text", text: (r.ok ? "💓 " : "⚠️ ") + r.text }] };
-});
-
-mcp.registerTool("clear_all", {
-  description: "清除所有 Agent 和消息（用于测试重置）。",
-  inputSchema: z.object({}),
-}, async (args) => {
-  const r = await handlers.clear_all(args);
-  return { content: [{ type: "text", text: "🧹 " + r.text }] };
-});
+// Tool result → MCP content wrapper
+function mcpContent(result) {
+  const text = result.ok !== false
+    ? `${result.ok ? "✅ " : ""}${result.text}`
+    : `⚠️ ${result.text}`;
+  const extra = result.summary ? "\n" + result.summary.join("\n") : "";
+  return [{ type: "text", text: text + extra }];
+}
 
 // ═══════════════════════════════════════════
-//  HTTP Server (MCP + Web Dashboard + API)
+//  SSE session manager
 // ═══════════════════════════════════════════
 
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: () => randomUUID(),
-});
+const sessions = new Map(); // sessionId → { res }
 
-await mcp.connect(transport);
+function sseSend(res, event, data) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+// Fix 1: 发送非 JSON 字符串的 SSE 事件（endpoint URL 不能加引号）
+function sseSendRaw(res, event, data) {
+  res.write(`event: ${event}\ndata: ${data}\n\n`);
+}
+
+// ═══════════════════════════════════════════
+//  JSON-RPC handler
+// ═══════════════════════════════════════════
+
+async function handleJsonRpc(msg) {
+  const { id, method, params } = msg;
+  switch (method) {
+    case "initialize":
+      return { jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", serverInfo: { name: "51team", version: "2.0.0" }, capabilities: { tools: {} } } };
+    case "tools/list":
+      return { jsonrpc: "2.0", id, result: { tools: toolDefs } };
+    case "tools/call": {
+      const { name, arguments: args } = params || {};
+      if (!handlers[name]) return { jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown tool: ${name}` } };
+      try {
+        const result = await handlers[name](args || {});
+        return { jsonrpc: "2.0", id, result: { content: mcpContent(result) } };
+      } catch (e) {
+        return { jsonrpc: "2.0", id, error: { code: -32603, message: e.message } };
+      }
+    }
+    case "notifications/initialized":
+      return null; // no response needed
+    default:
+      return { jsonrpc: "2.0", id, error: { code: -32601, message: `Unknown method: ${method}` } };
+  }
+}
 
 const httpServer = http.createServer(async (req, res) => {
   const url = req.url || "/";
 
-  // MCP endpoint
+  // MCP endpoint (manual SSE + JSON-RPC, bypassing MCP SDK transport)
   if (url === "/mcp" || url.startsWith("/mcp?")) {
+    if (req.method === "GET") {
+      // SSE connection: establish long-lived event stream
+      const sessionId = randomUUID();
+      // Fix 2: 加 Mcp-Session-Id 响应头，兼容新版 Claude Code Streamable HTTP 客户端
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "Mcp-Session-Id": sessionId,
+      });
+      // Fix 1: endpoint URL 用 sseSendRaw，不加 JSON 引号
+      sseSendRaw(res, "endpoint", `/mcp?sessionId=${sessionId}`);
+      sessions.set(sessionId, { res });
+      log(`[mcp] SSE connected: ${sessionId}`);
+      // Fix 3: 30 秒 keep-alive 防止 TCP idle timeout
+      const keepAlive = setInterval(() => { res.write(": heartbeat\n\n"); }, 30000);
+      req.on("close", () => {
+        clearInterval(keepAlive);
+        sessions.delete(sessionId);
+        log(`[mcp] SSE disconnected: ${sessionId}`);
+      });
+      return; // SSE stays open
+    }
+
     if (req.method === "POST") {
+      // JSON-RPC call: parse, execute, send response via SSE
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = Buffer.concat(chunks).toString();
-      const parsedBody = body ? JSON.parse(body) : undefined;
-      await transport.handleRequest(req, res, parsedBody);
-    } else {
-      await transport.handleRequest(req, res);
+      let msg;
+      try { msg = JSON.parse(body); } catch (e) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null }));
+        return;
+      }
+      // Fix 5: 同时检查 query param 和 Mcp-Session-Id header
+      const urlObj = new URL(req.url, `http://127.0.0.1:${PORT}`);
+      const sessionId = urlObj.searchParams.get("sessionId")
+        || req.headers["mcp-session-id"];
+      const session = sessions.get(sessionId);
+
+      // Fix 4: session 不存在时返回错误，而不是静默丢弃
+      if (!session) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: msg.id || null }));
+        return;
+      }
+      const response = await handleJsonRpc(msg);
+      if (response) {
+        sseSend(session.res, "message", response);
+      }
+      // Fix 6: 响应已通过 SSE 推送，HTTP body 应为空 202
+      res.writeHead(202, {});
+      res.end();
+      return;
     }
+
+    // Other methods → 405
+    res.writeHead(405);
+    res.end("Method Not Allowed");
     return;
   }
 
@@ -234,8 +269,8 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
     } catch (e) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: false, error: e.message }));
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: `Invalid request: ${e.message}` }));
     }
     return;
   }

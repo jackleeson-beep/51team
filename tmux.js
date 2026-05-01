@@ -28,18 +28,23 @@ export function sessionExists(sessionName) {
   }
 }
 
-export function sendKeys(sessionName, text) {
+export function sendKeys(sessionName, text, retries = 2) {
   if (!sessionName) return false;
-  try {
-    execSync(
-      `${TMUX} send-keys -t ${escapeSession(sessionName)} ${escapeShell(text)} Enter`,
-      { timeout: 3000 }
-    );
-    return true;
-  } catch (e) {
-    console.error(`[tmux] send-keys to ${sessionName} failed:`, e.message);
-    return false;
+  for (let i = 0; i < retries; i++) {
+    try {
+      execSync(
+        `${TMUX} send-keys -t ${escapeSession(sessionName)} ${escapeShell(text)} Enter`,
+        { timeout: 3000 }
+      );
+      return true;
+    } catch (e) {
+      if (i === retries - 1) {
+        console.error(`[tmux] send-keys to ${sessionName} failed after ${retries} retries:`, e.message);
+        return false;
+      }
+    }
   }
+  return false;
 }
 
 export function notifyAgent(sessionName, fromAgent, topic, preview) {

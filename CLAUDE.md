@@ -1,22 +1,30 @@
 # 51team — 我要 team
 
-MCP + tmux 多 Agent 协作框架。让 Claude Code 的多个 Agent 像团队一样实时通讯、自主协作。
+MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent 团队，用 MCP 工具协调他们。
 
-任何 Claude Code 会话中均可使用 MCP 工具（list_agents, send_message 等）。
-Router 通过 macOS LaunchAgent 开机自启，崩了自动拉。
+## 你的角色：项目经理
 
-## 架构
+当用户说"组队做 X"，你**只协调，不写代码**。Agent 是执行者，你是 PM。
 
-```
-Agent A ←→ tmux ←→ MCP Router (:9876) ←→ tmux ←→ Agent B
-                         │
-                   Web Dashboard
-```
+## 组队工作流
 
-- **MCP Router** (`server-http.js`) — 中心消息路由，单进程，内存状态
-- **tmux** — Agent 间通知通道，send-keys 注入终端
-- **store-memory.js** — 内存存储 + JSON 持久化 (`~/.claude/51team/state.json`)
-- **LaunchAgent** — `~/Library/LaunchAgents/com.51team.router.plist`，install.sh 自动生成，开机自启
+1. `51team up` — 确保 Router 运行
+2. `51team team <项目名> '<角色1,角色2>' '<任务描述>'` — 不超过 5 个角色
+3. 等待约 1-2 分钟（team-up.sh 自动等 Agent 就绪、注册、投规则）
+4. 用 MCP 工具 `list_agents` 确认所有人已注册
+5. `send_message(from='pm', to='all', topic='kickoff', content='...')` 发布任务：
+   - 告诉每人**一个**具体任务和期望输出
+   - 一次只分配一个任务，不要广播所有计划
+   - 说明汇报格式（写到哪个文件、回复什么内容）
+6. 每次 Agent 回复后 `check_messages`（自己可能也有未读消息）
+7. 用 `send_message` 给具体角色发后续指令，不用广播
+
+## 关键原则
+
+- 你只协调，不写代码
+- 一次一个任务，不一次广播全部计划
+- Agent 没回复时 `check_messages`，不要猜
+- Agent 没动静超过 3 分钟 → `check_messages` 确认，如果掉线 → `list_agents` 检查
 
 ## CLI 命令
 
@@ -31,58 +39,36 @@ Agent A ←→ tmux ←→ MCP Router (:9876) ←→ tmux ←→ Agent B
 51team dashboard     # 打开 Web Dashboard
 ```
 
-CLI 本身位于项目目录下的 `51team` 脚本，install.sh 会 symlink 到 `~/.local/bin/51team`。
+## MCP 工具
+
+`register_agent` · `unregister_agent` · `send_message` · `check_messages` · `read_messages` · `list_agents` · `heartbeat` · `clear_all`
+
+## 架构
+
+```
+Agent A ←→ tmux ←→ MCP Router (:9876) ←→ tmux ←→ Agent B
+                         │
+                   Web Dashboard
+```
+
+- **MCP Router** (`server-http.js`) — 中心消息路由，手动 SSE + JSON-RPC，零外部依赖
+- **tmux** — Agent 间通知通道，send-keys 注入终端
+- **store-memory.js** — 内存存储 + JSON 持久化
 
 ## 关键文件
 
 | 文件 | 职责 |
 |------|------|
 | `51team` | 统一 CLI 入口 |
-| `server-http.js` | Router 主程序：MCP Server + HTTP API + Dashboard HTML |
-| `store-memory.js` | 数据层：agents/messages CRUD，修剪，持久化，心跳 |
-| `tmux.js` | tmux 交互：session 检测、send-keys、notifyAgent |
+| `server-http.js` | Router：SSE + JSON-RPC + HTTP API + Dashboard |
+| `store-memory.js` | 数据层：agents/messages CRUD，持久化，心跳 |
+| `tmux.js` | tmux：session 检测、send-keys、notifyAgent |
 | `team-up.sh` | 一键组队：创建 tmux session、启动 Claude Code agent |
-| `stress-test.js` | 压力测试：7 项，覆盖 agent 规模/消息/吞吐/SSE |
-| `health-check.js` | 综合健康检查：10 项，含持久化/并发/重启恢复/E2E |
-| `install.sh` | 安装脚本（npm + CLI symlink + 动态生成 LaunchAgent + MCP 配置） |
+| `install.sh` | 安装：CLI symlink + LaunchAgent + MCP 配置 |
 
-## API 端点
+## 设计要点
 
-| 端点 | 方法 | 用途 |
-|------|------|------|
-| `/mcp` | GET/POST | MCP SSE/StreamableHTTP |
-| `/api/call` | POST | 直接调用 MCP 工具 `{tool, args}` |
-| `/api/state` | GET | 完整状态快照 |
-| `/api/clear` | POST | 重置状态（测试用） |
-| `/api/events` | GET | SSE 实时事件流 |
-| `/health` | GET | 健康检查 |
-
-## MCP 工具
-
-`register_agent` · `unregister_agent` · `send_message` · `check_messages` · `read_messages` · `list_agents` · `heartbeat` · `clear_all`
-
-## 设计决策
-
-- **不引入外部依赖**：Router 只用 Node 标准库 + `@modelcontextprotocol/sdk` + `zod`
-- **无并发锁**：单进程 Map/Array，事件循环天然串行
-- **tmux 路径不硬编码**：`tmux.js` 启动时自动检测 `command -v` → 常见路径 fallback
-- **消息上限 10,000**：超出自动修剪最早的消息
-- **持久化截断 64KB/条**：防止大消息撑爆状态文件
-- **Agent TTL 5 分钟**：心跳超时自动注销，防止死 agent 堆积
-- **Dashboard 内联 HTML**：零外部资源，单文件自包含
-
-## 性能基线
-
-- 最大 Agent 数：50（推荐 ≤ 20）
-- 最大消息体积：4.2 MB（推荐 ≤ 64KB）
-- 吞吐量：74 msg/s（4 并发）
-- tmux 送达率：100%
-- 并发 SSE：200+
-
-## 注意事项
-
-- tmux 是必须依赖（Mac: `brew install tmux`）
-- team-up.sh 默认模型 `deepseek-v4-flash`，通过 `ANTHROPIC_MODEL` 环境变量覆盖
-- team-up.sh 默认 effort `low`，通过 `CLAUDE_CODE_EFFORT_LEVEL` 环境变量覆盖
-- Router 重启后消息不丢失（自动从 state.json 恢复）
-- Dashboard SSE 断连后 5 秒自动重连，回退到 5 秒轮询
+- 零外部依赖（Node 标准库 only）
+- Agent TTL 5 分钟，心跳间隔 2 分钟
+- 消息上限 10,000，超出自动修剪
+- Router 重启后消息不丢失（state.json 持久化）
