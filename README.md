@@ -1,9 +1,18 @@
 # 51team
 
-### 我要 team · 五一劳动节 · 五指成拳 · 一个目标
+### DeepSeek V4 多 Agent 协作框架 · 开源 · macOS ARM
 
-> 让 Claude Code 的多个 Agent 像真正的团队一样实时对话、自主协作。  
-> 基于 MCP + tmux，专为 DeepSeek V4 等多模型组合优化。
+> Claude Code + DeepSeek V4 下，让多个 Agent 像真正的团队一样实时对话、自主协作。  
+> 基于 MCP + tmux 重建 Agent 通讯层，专为非 Anthropic 模型优化。
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](./VERSION)
+
+```bash
+git clone https://github.com/jackleeson-beep/51team.git
+cd 51team && ./install.sh
+51team status
+```
 
 ---
 
