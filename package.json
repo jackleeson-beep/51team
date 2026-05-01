@@ -1,0 +1,13 @@
+{
+  "name": "51team",
+  "version": "1.0.0",
+  "description": "我要 team — MCP + tmux multi-agent collaboration framework for Claude Code",
+  "type": "module",
+  "main": "server-http.js",
+  "scripts": {
+    "start": "node server-http.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
