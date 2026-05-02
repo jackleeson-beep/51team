@@ -2,3 +2,4 @@ node_modules/
 *.log
 state.json
 router.pid
+.DS_Store

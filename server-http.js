@@ -192,25 +192,55 @@ const httpServer = http.createServer(async (req, res) => {
   // MCP endpoint (manual SSE + JSON-RPC, bypassing MCP SDK transport)
   if (url === "/mcp" || url.startsWith("/mcp?")) {
     if (req.method === "GET") {
-      // SSE connection: establish long-lived event stream
-      const sessionId = randomUUID();
-      // Fix 2: 加 Mcp-Session-Id 响应头，兼容新版 Claude Code Streamable HTTP 客户端
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "Mcp-Session-Id": sessionId,
-      });
-      // Fix 1: endpoint URL 用 sseSendRaw，不加 JSON 引号
-      sseSendRaw(res, "endpoint", `/mcp?sessionId=${sessionId}`);
-      sessions.set(sessionId, { res });
-      log(`[mcp] SSE connected: ${sessionId}`);
-      // Fix 3: 30 秒 keep-alive 防止 TCP idle timeout
-      const keepAlive = setInterval(() => { res.write(": heartbeat\n\n"); }, 30000);
+      // SSE connection: establish or resume long-lived event stream
+      const urlObj = new URL(req.url, `http://127.0.0.1:${PORT}`);
+      const existingId = urlObj.searchParams.get("sessionId");
+      const isResume = existingId && sessions.has(existingId);
+
+      const sessionId = isResume ? existingId : randomUUID();
+
+      if (isResume) {
+        // Resume: update res ref, clear old keepalive, start fresh
+        const sess = sessions.get(sessionId);
+        clearInterval(sess._keepAlive);
+        sess.res = res;
+        sess._keepAlive = setInterval(() => { res.write(": heartbeat\n\n"); }, 30000);
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "Mcp-Session-Id": sessionId,
+        });
+        sseSendRaw(res, "endpoint", `/mcp?sessionId=${sessionId}`);
+        log(`[mcp] SSE resumed: ${sessionId}`);
+      } else {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "Mcp-Session-Id": sessionId,
+        });
+        sseSendRaw(res, "endpoint", `/mcp?sessionId=${sessionId}`);
+        sessions.set(sessionId, { res });
+        sessions.get(sessionId)._keepAlive = setInterval(() => { res.write(": heartbeat\n\n"); }, 30000);
+        log(`[mcp] SSE connected: ${sessionId}`);
+      }
+
       req.on("close", () => {
-        clearInterval(keepAlive);
-        sessions.delete(sessionId);
+        const sess = sessions.get(sessionId);
+        if (sess) {
+          clearInterval(sess._keepAlive);
+          sess.res = null; // mark disconnected but keep session alive for reconnection
+        }
         log(`[mcp] SSE disconnected: ${sessionId}`);
+        // Defer session cleanup — only remove after 30s if not reconnected
+        setTimeout(() => {
+          const s = sessions.get(sessionId);
+          if (s && !s.res) {
+            sessions.delete(sessionId);
+            log(`[mcp] SSE expired: ${sessionId}`);
+          }
+        }, 30000);
       });
       return; // SSE stays open
     }
@@ -239,12 +269,19 @@ const httpServer = http.createServer(async (req, res) => {
         return;
       }
       const response = await handleJsonRpc(msg);
-      if (response) {
+      if (response && session.res) {
+        // SSE connected → push response via stream
         sseSend(session.res, "message", response);
+        res.writeHead(202, {});
+        res.end();
+      } else if (response) {
+        // SSE disconnected but session alive → return JSON-RPC directly
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(response));
+      } else {
+        res.writeHead(202, {});
+        res.end();
       }
-      // Fix 6: 响应已通过 SSE 推送，HTTP body 应为空 202
-      res.writeHead(202, {});
-      res.end();
       return;
     }
 

@@ -40,10 +40,13 @@ ${CYAN}Commands:${NC}
   down            停止 Router（禁用自动恢复）
   restart         重启 Router
   status          查看 Router 状态 + Agent 列表
+  ps              查看 Agent 在线/离线/过期状态
   team <项目> <角色1,角色2,...> [任务]
                   一键组队
+  destroy [项目]   退出团队：杀掉 tmux session + 清除状态
   logs            实时日志（tail -f）
   clean           清除所有状态
+  uninstall       卸载：清状态、删 LaunchAgent、删 symlink
   dashboard       打开 Web Dashboard
 
 ${CYAN}Env:${NC}
@@ -246,8 +249,103 @@ cmd_clean() {
   curl -s -X POST "http://127.0.0.1:${PORT}/api/clear" > /dev/null 2>&1 && echo -e " ${GREEN}✅${NC}" || echo -e " ${RED}❌${NC} (Router 是否在运行？)"
 }
 
+cmd_ps() {
+  if ! router_running; then
+    echo -e "${YELLOW}Router 未运行${NC}"
+    return 1
+  fi
+  local state=$(curl -s "http://127.0.0.1:${PORT}/api/state" 2>/dev/null)
+  if [ -z "$state" ]; then
+    echo -e "${RED}无法获取状态${NC}"
+    return 1
+  fi
+  echo -e "${CYAN}Agent${NC}                ${CYAN}Status${NC}    ${CYAN}Session${NC}           ${CYAN}Last Heartbeat${NC}"
+  echo "─────────────────────────────────────────────────"
+  echo "$state" | python3 -c "
+import sys, json
+from datetime import datetime, timezone
+d = json.load(sys.stdin)
+now = datetime.now(timezone.utc)
+for a in d.get('agents', []):
+    name = a['name']
+    online = a.get('online', False)
+    session = a.get('tmuxSession', '?')
+    hb = a.get('lastHeartbeat') or a.get('registeredAt', '')
+    if hb:
+        age = (now - datetime.fromisoformat(hb.replace('Z','+00:00'))).total_seconds()
+        hb_str = f'{int(age)}s ago' if age < 120 else f'{int(age//60)}m ago'
+    else:
+        hb_str = 'never'
+    status = '🟢 LIVE' if online else ('🔴 GONE' if hb else '⚫ EXP')
+    print(f'{name:<20} {status:<8} {session:<18} {hb_str}')
+  " 2>/dev/null || echo "  (no agents)"
+}
+
+cmd_destroy() {
+  local project="${1:-}"
+  if [ -z "$project" ]; then
+    echo "用法: 51team destroy <项目名>"
+    echo "示例: 51team destroy myapp"
+    return 1
+  fi
+
+  echo "退出团队: ${project}"
+
+  # 1. 从 Router 注销项目内 agent（不调用 api/clear，避免影响其他项目）
+  if router_running; then
+    local state=$(curl -s "http://127.0.0.1:${PORT}/api/state" 2>/dev/null)
+    if [ -n "$state" ]; then
+      local names=$(echo "$state" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+project = '${project}'
+for a in d.get('agents', []):
+    s = a.get('tmuxSession', '')
+    if s.startswith(project + '-'):
+        print(a['name'])
+" 2>/dev/null)
+      for name in $names; do
+        local body="{\"tool\":\"unregister_agent\",\"args\":{\"agent_name\":\"${name}\"}}"
+        curl -s -X POST "http://127.0.0.1:${PORT}/api/call" \
+          -H "Content-Type: application/json" -d "$body" > /dev/null
+        echo "  注销 agent: ${name}"
+      done
+    fi
+  fi
+
+  # 2. 按前缀杀 tmux session（无论 Router 是否在线、是否有状态）
+  local sessions=$(tmux list-sessions 2>/dev/null | grep "^${project}-" | cut -d: -f1)
+  local count=0
+  for s in $sessions; do
+    tmux kill-session -t "$s" 2>/dev/null && echo "  ✅ 已终止: $s" && count=$((count + 1))
+  done
+  [ "$count" -gt 0 ] && echo "  共终止 $count 个 tmux session" || echo "  (没有活跃的 tmux session)"
+  echo "团队 ${project} 已退出"
+}
+
+cmd_uninstall() {
+  echo "卸载 51team..."
+  # Stop Router
+  cmd_down
+  # Remove LaunchAgent
+  if [ -f "$LAUNCH_PLIST" ]; then
+    echo -n "删除 LaunchAgent..."
+    launchctl bootout "gui/$(id -u)/${LAUNCH_LABEL}" 2>/dev/null || true
+    rm -f "$LAUNCH_PLIST"
+    echo -e " ${GREEN}✅${NC}"
+  fi
+  # Remove state
+  echo -n "删除状态文件..."
+  rm -rf "${HOME}/.claude/51team" 2>/dev/null && echo -e " ${GREEN}✅${NC}" || echo ""
+  # Remove symlink
+  echo -n "删除 CLI..."
+  rm -f "${HOME}/.local/bin/51team" 2>/dev/null && echo -e " ${GREEN}✅${NC}" || echo ""
+  echo "完成。要彻底删除，再手动: rm -rf ${SCRIPT_DIR}"
+}
+
 cmd_dashboard() {
-  open "http://127.0.0.1:${PORT}/" 2>/dev/null || echo "Dashboard: http://127.0.0.1:${PORT}/"
+  echo "Dashboard: http://127.0.0.1:${PORT}/"
+  echo "打开浏览器粘贴此地址。第一次打开后，数据会自动刷新。"
 }
 
 cmd_daemon() {
@@ -263,9 +361,12 @@ case "${1:-}" in
   down)      shift; cmd_down "$@" ;;
   restart)   shift; cmd_restart "$@" ;;
   status)    shift; cmd_status "$@" ;;
+  ps)        shift; cmd_ps "$@" ;;
   team)      shift; cmd_team "$@" ;;
+  destroy)   shift; cmd_destroy "$@" ;;
   logs)      shift; cmd_logs "$@" ;;
   clean)     shift; cmd_clean "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
   dashboard) shift; cmd_dashboard "$@" ;;
   daemon)    shift; cmd_daemon "$@" ;;
   version|--version|-V) shift; echo "51team $(cat "${SCRIPT_DIR}/VERSION")" ;;

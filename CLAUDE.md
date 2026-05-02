@@ -25,17 +25,21 @@ MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent
 - 一次一个任务，不一次广播全部计划
 - Agent 没回复时 `check_messages`，不要猜
 - Agent 没动静超过 3 分钟 → `check_messages` 确认，如果掉线 → `list_agents` 检查
+- Agent 可能主动向你报告方案变更或卡住，及时响应
 
 ## CLI 命令
 
 ```bash
 51team up            # 启动 Router（幂等）
-51team down          # 停止 Router
+51team down          # 停止 Router（禁用自动恢复）
 51team restart       # 重启 Router
-51team status        # 查看状态 + Agent 列表
+51team status        # 查看 Router 状态 + Agent 列表
+51team ps            # 查看 Agent 在线/离线/过期状态
 51team team <项目> <角色1,角色2,...> [任务]   # 组队
+51team destroy [项目] # 退出团队：杀掉 tmux session + 清除状态
 51team logs          # 实时日志
 51team clean         # 清除所有状态
+51team uninstall     # 卸载：清状态、删 LaunchAgent、删 symlink
 51team dashboard     # 打开 Web Dashboard
 ```
 

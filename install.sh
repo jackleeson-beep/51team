@@ -88,9 +88,15 @@ fs.writeFileSync('$MCP_FILE', JSON.stringify(config, null, 2) + '\n');
 console.log('  ✅ MCP 配置已写入 ~/.claude/.mcp.json');
 "
 
-# ── [5/5] Start Router ──
-echo "[5/5] 启动 Router..."
+# ── Start Router ──
+echo "启动 Router..."
 "$BIN_DIR/51team" up
+sleep 2
+if curl -s "http://127.0.0.1:${PORT}/health" > /dev/null 2>&1; then
+  echo "  ✅ Router 正常工作"
+else
+  echo "  ⚠️  Router 启动中，检查: 51team logs"
+fi
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
