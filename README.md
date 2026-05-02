@@ -12,55 +12,53 @@ cd 51team && ./install.sh
 
 ## 它做了什么
 
-在 Claude Code 中开多个 tmux session，每个 session 跑一个独立 Claude Code agent。通过 MCP Router 让他们用 `send_message` / `check_messages` 协作，你在主 session 中用 MCP 工具当项目经理协调他们。
+在 Claude Code 中开多个 tmux session，每个 session 跑一个独立 Claude Code agent。通过 MCP Router 让他们用 `send_message` / `check_messages` 协作。agent 永不掉线，有消息就干活，没消息就安静挂着。你只需要一个主 session 说话，不用自己当项目经理。
 
-## 怎么让它不跑偏
+## 工作方式：消息环
+
+不是项目经理派活，是一个共享消息频道：
+
+```
+你 ──("给官网设计新风格")──→ Router ──→ designer（收到，开始画）
+                                      ──→ engineer（收到，记着不管）
+                                      ──→ seo（收到，记着不管）
+designer ──("设计稿完成，需要实现")──→ Router ──→ engineer（收到，开始编码）
+seo ──("导航结构变了，影响 SEO")──→ Router ──→ designer（收到，调整导航）
+                                              ──→ engineer（收到，调整布局）
+```
+
+- 谁该说话谁说话
+- 方案变了立刻通知相关人
+- 卡住了开口问
+- 没事做就安静挂着，不给自己找活
+
+## Agent 怎么保证永不离线
+
+tmux 里跑的其实是一个死循环：
+
+```bash
+while true; do
+  claude --bare --dangerously-skip-permissions --mcp-config '{"51team":{"url":"..."}}' --strict-mcp-config
+  sleep 3
+done
+```
+
+Claude Code 退出后 3 秒自动重启，SSE session 30 秒内可重建，连接永续。不再有 5 分钟心跳 TTL 过期的问题。
+
+## prompt 架构
 
 51team 用两套 prompt 控制行为：
 
 ```
 CLAUDE.md（项目根目录）                send-keys 注入（每个 agent 专属）
   主 session 加载                         tmux 中的 agent 收到
-  "你只协调，不写代码"                     "你是 myapp 项目的 architect"
-  "一次分配一个任务"                        "Step1 register_agent"
-  "check_messages 看回复"                   "等待 coordinator 分配任务"
+  "你只协调，不写代码"                     "你是设计师，持续在线"
+  "send_message(to=all) 发任务"            "有人找你你就干活"
+  "check_messages 看回复"                  "方案变了就开口"
 ```
 
-- **CLAUDE.md** 是给 Claude Code 主会话看的，告诉它怎么当好项目经理。你不需要背命令，只需一句话比如「组个队做用户系统」，CLAUDE.md 会指导它完成。
-- **CORE_PROMPT** 通过 `team-up.sh` 经由 tmux send-keys 发给每个 agent，包含角色名、session 名、需执行的步骤和规则。每个 agent 收到的 prompt 都不一样。
-- 两者同时发挥作用。缺少 CLAUDE.md，主 session 不知道该做什么。缺少 CORE_PROMPT，agent 不知道自己的角色。
-
-## 架构
-
-```
-                     ┌──────────────────────┐
-                     │   MCP Router :9876    │
-                     │   · Agent 注册/消息   │
- tmux: project-      │   · SSE session 管理  │     tmux: project-
- architect           │   · Web Dashboard     │     frontend
-     │               └──────────────────────┘         │
-     │                      │    │                    │
-     └────── send_message ──┘    └── SSE / JSON-RPC ──┘
-```
-
-- **Router** (`server-http.js`) — 手动实现 SSE + JSON-RPC，零外部依赖。每个 agent 独立 session，断连 30 秒内可重建。
-- **tmux** — Agent 运行容器。send-keys 注入初始 prompt，Router 用 notifyAgent 推实时通知。
-- **LaunchAgent** — macOS 开机自启，Router 崩溃后自动拉起。
-
-### Agent 启动流程
-
-```
-1. team-up.sh 并行启动所有 agent（claude --bare --dangerously-skip-permissions）
-2. 每 agent 独享 tmux session，只连 51team MCP（--strict-mcp-config）
-3. capture-pane 轮询检测就绪 → 同时发结构化 prompt
-4. Agent 自动 register → list_agents → send_message → check_messages
-5. 等待 coordinator 分配任务（收到前不自行开始）
-```
-
-- **并行启动**：所有 agent 同时启动，不必等前一个就绪再启动下一个
-- **--bare**：Claude Code 不加载工作区上下文，专注团队协作
-- **--dangerously-skip-permissions**：跳过所有信任/权限弹窗
-- **--strict-mcp-config**：只加载 51team 一个 MCP server，不加载其他 shenju-databook 等
+- **CLAUDE.md** 告诉主 session 怎么用 Router 发消息、查状态。不需要背命令。
+- **CORE_PROMPT** 通过 `team-up.sh` 经由 tmux send-keys 发给每个 agent，定义它的角色和行为规则。
 
 ## 安装
 
@@ -71,7 +69,7 @@ cd 51team
 
 前提：Node.js ≥ 18、tmux（`brew install tmux`）
 
-安装后 `~/.local/bin/51team` 已加入 PATH，`~/.claude/.mcp.json` 已写入 51team 的 MCP 配置。
+安装后 `~/.local/bin/51team` 加入 PATH，MCP 配置写入 `~/.claude/.mcp.json`。
 
 ## CLI 命令
 
@@ -81,13 +79,13 @@ cd 51team
 | `51team down` | 停止 Router |
 | `51team restart` | 重启 Router |
 | `51team status` | 查看 Router 状态 + Agent 列表 |
-| `51team ps` | 查看 Agent 在线/离线/过期状态 + 最后心跳 |
-| `51team team <项目> <角色1,...> [任务]` | 一键组队 |
-| `51team destroy [项目]` | 退出团队：杀掉 tmux session + 清状态 |
+| `51team ps` | 查看 Agent 在线/离线/心跳 |
+| `51team team <项目> <角色,...> [任务]` | 组队（并行启动，永不离线） |
+| `51team destroy <项目>` | 退出团队（杀 tmux + 只注销该项目 agent） |
 | `51team logs` | 实时日志 |
-| `51team clean` | 清除所有 Router 状态 |
-| `51team uninstall` | 卸载（删 symlink、LaunchAgent、状态文件） |
-| `51team dashboard` | 打开 Web Dashboard |
+| `51team clean` | 清除所有状态 |
+| `51team uninstall` | 卸载（确认后清理全方位配置） |
+| `51team dashboard` | Dashboard URL |
 
 ## 使用
 
@@ -95,17 +93,18 @@ cd 51team
 
 在 Claude Code 中说：
 
-> 组个队做用户系统
+> 组个队做官网
 
-CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队，然后你可以：
-1. `list_agents` 确认全员在线
-2. `send_message(from='pm', to='all', ...)` 发布任务
-3. `check_messages` 看 agent 回复
+CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队。然后你只需要发消息：
+
+1. `send_message(from='pm', to='all', topic='kickoff', content='给官网设计新风格')`
+2. agnet 收到后自动开工
+3. 想看进展时 `check_messages`
 
 ### 手动组队
 
 ```bash
-51team team myapp "architect,frontend,backend,qa" "做一个用户登录模块"
+51team team myapp "designer,engineer,tester,seo"
 ```
 
 启动后终端显示：
@@ -126,18 +125,48 @@ CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队，然
 51team destroy myapp
 ```
 
-杀掉该项目所有 tmux session + 清除 Router 状态。
+只杀 myapp 的 tmux session、只注销 myapp 的 agent，不影响其他项目。
 
 ## MCP 工具
 
 | 工具 | 用途 |
 |------|------|
 | `register_agent` | Agent 启动时注册到 Router |
-| `send_message` | 向其他 Agent 发消息（to='all' 广播） |
+| `send_message` | 发消息（to='all' 广播，或指定角色） |
 | `check_messages` | 查看未读消息 |
 | `read_messages` | 读消息全文（自动标记已读） |
 | `list_agents` | 列出所有 Agent 及在线状态 |
-| `heartbeat` | 每 2 分钟心跳，否则 5 分钟自动注销 |
+| `heartbeat` | 心跳保活（agent 自动调用） |
+
+## 架构
+
+```
+                     ┌──────────────────────┐
+                     │   MCP Router :9876    │
+                     │   · Agent 注册/消息   │
+ tmux: project-      │   · SSE session 管理  │     tmux: project-
+ designer            │   · Web Dashboard     │     engineer
+     │               └──────────────────────┘         │
+     │                      │    │                    │
+     └────── send_message ──┘    └── SSE / JSON-RPC ──┘
+```
+
+- **Router**（`server-http.js`）— 手动实现 SSE + JSON-RPC，零外部依赖。每个 agent 独立 session，断连 30 秒内可重建。
+- **tmux** — Agent 运行容器。`while true` 循环确保 claude 退出后自动重生。
+- **LaunchAgent** — macOS 开机自启，Router 崩溃后自动拉起。
+
+## 测试
+
+```bash
+# 回归测试（25 项，5 秒）
+bash test-bugs-regression.sh
+
+# Session resume 测试（~45 秒）
+node test-session-resume.js
+
+# 完整健康检查（~2 分钟）
+node health-check.js
+```
 
 ## 环境变量
 
@@ -145,23 +174,15 @@ CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队，然
 |------|--------|------|
 | `MCP_BRIDGE_PORT` | 9876 | Router 端口 |
 | `ANTHROPIC_MODEL` | deepseek-v4-flash | Agent 模型 |
-| `CLAUDE_CODE_EFFORT_LEVEL` | low | Agent effort 级别 |
+| `CLAUDE_CODE_EFFORT_LEVEL` | low | Agent effort |
 
 ## 设计要点
 
 - **零外部依赖**（Node 标准库 only）
-- **Agent TTL 5 分钟**，心跳间隔 2 分钟
+- **Agent 永不离线**（`while true` + SSE session resume）
 - **消息上限 10,000**，超出自动修剪
 - **Router 重启后消息不丢失**（state.json 持久化）
-- **SSE session 断连 30 秒内可重建**，工具调用不中断
-
-## 性能
-
-在 Mac (Node 23 + tmux 3.6a) 上压测：
-
-- 最大 Agent 数：50（推荐 ≤ 20）
-- 最大消息体积：4.2 MB（推荐 ≤ 64KB）
-- 吞吐量：74 msg/s（4 并发）
+- **退出干净**：`destroy` 只杀指定项目，`uninstall` 全面清理
 
 ## License
 

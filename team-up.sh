@@ -87,7 +87,7 @@ for role in "${ROLES[@]}"; do
   tmux setenv -t "${SESSION}" TMUX_SESSION "${SESSION}"
   tmux setenv -t "${SESSION}" MCP_ROUTER_URL "${ROUTER_URL}"
 
-  echo "  ✅ ${role} → session: ${SESSION}"
+	      echo "  ✅ ${role} 就绪"
 done
 
 # ── Step 3a: 在所有 session 中启动 Claude Code（并行）──
@@ -100,7 +100,7 @@ MCP_JSON=$(printf '{"mcpServers":{"51team":{"url":"http://127.0.0.1:%s/mcp","typ
 for role in "${ROLES[@]}"; do
   role=$(echo "$role" | xargs)
   tmux send-keys -t "${PROJECT}-${role}" \
-    "ANTHROPIC_MODEL=${MODEL} CLAUDE_CODE_EFFORT_LEVEL=${EFFORT} claude --bare --mcp-config '${MCP_JSON}' --strict-mcp-config" Enter
+    "while true; do ANTHROPIC_MODEL=${MODEL} CLAUDE_CODE_EFFORT_LEVEL=${EFFORT} claude --bare --dangerously-skip-permissions --mcp-config '${MCP_JSON}' --strict-mcp-config; sleep 3; done" Enter
 done
 
 # ── Step 3b: 统一消除权限弹窗 ──
@@ -118,31 +118,20 @@ for role in "${ROLES[@]}"; do
     SESSION="${PROJECT}-${role}"
 
     if [ -n "$TASK" ]; then
-      PROMPT="你是 ${PROJECT} 项目的 ${role}。严格按顺序：Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}'。Step2 call list_agents。Step3 call send_message from='${role}' to='all' content='自我介绍：我是${role}，已就位，等待任务'。关键规则：1) 每次回复后主动 check_messages agent_name='${role}'; 2) 每 2 分钟 heartbeat agent_name='${role}'，否则 5 分钟自动注销; 3) 沟通就是生产力——方案变更、技术选型变化、卡住超过 3 分钟，立即向相关角色（包括 coordinator）报告，不要自己纠结。然后等待 coordinator 分配任务，收到前不要自行开始。"
+      PROMPT="你是 ${PROJECT} 项目的 ${role}。Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}'。Step2 list_agents。Step3 send_message from='${role}' to='all' content='自我介绍：我是${role}，已就位'。之后持续在线，不主动找活。有人 send_message 涉及你的领域就干活，方案变化或卡住就发言，没事就安静挂着。每轮结束 check_messages 看有没有人找你。每 2 分钟 heartbeat agent_name='${role}'。"
     else
-      PROMPT="你是 ${PROJECT} 项目的 ${role}。严格按顺序：Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}'。Step2 call list_agents。Step3 call send_message from='${role}' to='all' content='已就位，等待 coordinator 分配任务'。关键规则：1) 每次回复后主动 check_messages agent_name='${role}'; 2) 每 2 分钟 heartbeat agent_name='${role}'，否则 5 分钟自动注销; 3) 沟通就是生产力——方案变更、技术选型变化、卡住超过 3 分钟，立即向相关角色（包括 coordinator）报告，不要自己纠结。然后等待 coordinator 分配任务，收到前不要自行开始。"
+      PROMPT="你是 ${PROJECT} 项目的 ${role}。Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}'。Step2 list_agents。Step3 send_message from='${role}' to='all' content='自我介绍：我是${role}，已就位'。之后持续在线，不主动找活。有人 send_message 涉及你的领域就干活，方案变化或卡住就发言，没事就安静挂着。每轮结束 check_messages 看有没有人找你。每 2 分钟 heartbeat agent_name='${role}'。"
     fi
 
     if wait_for_claude_ready "$SESSION" 120; then
       tmux send-keys -t "${SESSION}" "${PROMPT}"
       sleep 0.5 2>/dev/null || sleep 1
       tmux send-keys -t "${SESSION}" Enter
-      # wait for Claude Code to process prompt + call register_agent, then dismiss permission popup
-      sleep 10
-      for _ in 1 2 3; do
-        tmux send-keys -t "${SESSION}" Enter
-        sleep 2
-      done
-      echo "  ✅ ${role} 就绪"
+	      echo "  ✅ ${role} 就绪"
     else
       tmux send-keys -t "${SESSION}" "${PROMPT}"
       sleep 1
       tmux send-keys -t "${SESSION}" Enter
-      sleep 10
-      for _ in 1 2 3; do
-        tmux send-keys -t "${SESSION}" Enter
-        sleep 2
-      done
       echo "  ⚠️  ${role} 超时，已尝试发送 prompt"
     fi
   ) &

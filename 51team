@@ -325,6 +325,13 @@ for a in d.get('agents', []):
 
 cmd_uninstall() {
   echo "卸载 51team..."
+  echo -n "确认卸载吗？这将停止 Router、删除所有状态和配置。(y/N) "
+  read -r confirm
+  if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+    echo "已取消"
+    return 0
+  fi
+
   # Stop Router
   cmd_down
   # Remove LaunchAgent
@@ -340,7 +347,26 @@ cmd_uninstall() {
   # Remove symlink
   echo -n "删除 CLI..."
   rm -f "${HOME}/.local/bin/51team" 2>/dev/null && echo -e " ${GREEN}✅${NC}" || echo ""
-  echo "完成。要彻底删除，再手动: rm -rf ${SCRIPT_DIR}"
+  # Clean .mcp.json entries for all profiles
+  echo -n "清理 MCP 配置..."
+  for MCP in "${HOME}/.claude/.mcp.json" "${HOME}/.claude-deepseek/.mcp.json" "${HOME}/.claude-opus/.mcp.json"; do
+    [ -f "$MCP" ] || continue
+    python3 -c "
+import json, sys
+with open('$MCP') as f:
+    cfg = json.load(f)
+changed = False
+if 'mcpServers' in cfg and '51team' in cfg['mcpServers']:
+    del cfg['mcpServers']['51team']
+    changed = True
+if changed:
+    with open('$MCP', 'w') as f:
+        json.dump(cfg, f, indent=2)
+        f.write('\n')
+" 2>/dev/null
+  done
+  echo -e " ${GREEN}✅${NC}"
+  echo "完成。要彻底删除源码: rm -rf ${SCRIPT_DIR}"
 }
 
 cmd_dashboard() {
