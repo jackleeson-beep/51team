@@ -47,6 +47,21 @@ CLAUDE.md（项目根目录）                send-keys 注入（每个 agent �
 - **tmux** — Agent 运行容器。send-keys 注入初始 prompt，Router 用 notifyAgent 推实时通知。
 - **LaunchAgent** — macOS 开机自启，Router 崩溃后自动拉起。
 
+### Agent 启动流程
+
+```
+1. team-up.sh 并行启动所有 agent（claude --bare --dangerously-skip-permissions）
+2. 每 agent 独享 tmux session，只连 51team MCP（--strict-mcp-config）
+3. capture-pane 轮询检测就绪 → 同时发结构化 prompt
+4. Agent 自动 register → list_agents → send_message → check_messages
+5. 等待 coordinator 分配任务（收到前不自行开始）
+```
+
+- **并行启动**：所有 agent 同时启动，不必等前一个就绪再启动下一个
+- **--bare**：Claude Code 不加载工作区上下文，专注团队协作
+- **--dangerously-skip-permissions**：跳过所有信任/权限弹窗
+- **--strict-mcp-config**：只加载 51team 一个 MCP server，不加载其他 shenju-databook 等
+
 ## 安装
 
 ```bash
