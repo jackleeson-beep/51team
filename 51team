@@ -51,7 +51,8 @@ ${CYAN}Commands:${NC}
 
 ${CYAN}Env:${NC}
   MCP_BRIDGE_PORT             Router 端口（默认 9876）
-  TYPESAFE_API_KEY            TypeSafe Jev API key（启用 to=auto / jev_decide）
+  TYPESAFE_API_KEY            TypeSafe Jev API key（可选）
+  OPENROUTER_API_KEY          OpenRouter key（推荐，Jev 免排队）
   TYPESAFE_MODEL              Jev 模型（默认 jev-latest）
   ANTHROPIC_MODEL             Agent 模型（默认 deepseek-v4-flash）
   CLAUDE_CODE_EFFORT_LEVEL    Agent effort（默认 low）

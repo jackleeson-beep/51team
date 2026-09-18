@@ -1,8 +1,13 @@
 // TypeSafe Jev (System One) client — Node fetch only, zero npm deps.
-// Docs: https://docs.typesafe.ai/
+// Providers:
+//   1) TYPESAFE_API_KEY  → https://api.typesafe.ai/v1/systemone
+//   2) OPENROUTER_API_KEY → https://openrouter.ai/api/alpha/decisions
+// Docs: https://docs.typesafe.ai/ · https://openrouter.ai/~typesafe/jev-latest
 
-const DEFAULT_BASE_URL = "https://api.typesafe.ai/v1";
-const DEFAULT_MODEL = "jev-latest";
+const TYPESAFE_BASE_URL = "https://api.typesafe.ai/v1";
+const TYPESAFE_MODEL = "jev-latest";
+const OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions";
+const OPENROUTER_MODEL = "~typesafe/jev-latest";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_ROUTE_THRESHOLD = 0.45;
 
@@ -15,23 +20,55 @@ export class JevError extends Error {
   }
 }
 
+export function getJevProvider() {
+  if (process.env.TYPESAFE_API_KEY?.trim()) return "typesafe";
+  if (process.env.OPENROUTER_API_KEY?.trim()) return "openrouter";
+  return null;
+}
+
 export function isJevConfigured() {
-  return Boolean(process.env.TYPESAFE_API_KEY?.trim());
+  return getJevProvider() !== null;
 }
 
 export function getJevConfig() {
-  return {
-    apiKey: process.env.TYPESAFE_API_KEY?.trim() || "",
-    baseUrl: (process.env.TYPESAFE_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, ""),
-    model: process.env.TYPESAFE_MODEL || DEFAULT_MODEL,
-    timeoutMs: Number(process.env.TYPESAFE_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-  };
+  const provider = getJevProvider();
+  const timeoutMs = Number(process.env.TYPESAFE_TIMEOUT_MS || process.env.JEV_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+
+  if (provider === "typesafe") {
+    return {
+      provider,
+      apiKey: process.env.TYPESAFE_API_KEY.trim(),
+      url: `${(process.env.TYPESAFE_BASE_URL || TYPESAFE_BASE_URL).replace(/\/$/, "")}/systemone`,
+      model: process.env.TYPESAFE_MODEL || TYPESAFE_MODEL,
+      timeoutMs,
+    };
+  }
+  if (provider === "openrouter") {
+    return {
+      provider,
+      apiKey: process.env.OPENROUTER_API_KEY.trim(),
+      url: process.env.OPENROUTER_DECISIONS_URL || OPENROUTER_DECISIONS_URL,
+      model: process.env.OPENROUTER_JEV_MODEL || OPENROUTER_MODEL,
+      timeoutMs,
+      referer: process.env.OPENROUTER_HTTP_REFERER || "https://github.com/jackleeson-beep/51team",
+      title: process.env.OPENROUTER_TITLE || "51team",
+    };
+  }
+  return { provider: null, apiKey: "", url: "", model: TYPESAFE_MODEL, timeoutMs };
+}
+
+function missingKeyError() {
+  return new JevError(
+    "未配置 Jev。任选其一：\n" +
+      "  export OPENROUTER_API_KEY=...   # OpenRouter（推荐，免排队）https://openrouter.ai/keys\n" +
+      "  export TYPESAFE_API_KEY=...     # TypeSafe 原生 https://console.typesafe.ai"
+  );
 }
 
 /**
- * Call TypeSafe System One (Jev).
+ * Call Jev via TypeSafe System One or OpenRouter Decisions API.
  * @param {{ state: string|object|array, questions: object, model?: string }} input
- * @returns {Promise<{ model: string, answers: object, usage?: object }>}
+ * @returns {Promise<{ model: string, answers: object, usage?: object, provider?: string }>}
  */
 export async function systemOne({ state, questions, model } = {}) {
   if (state === undefined || state === null || state === "") {
@@ -42,11 +79,7 @@ export async function systemOne({ state, questions, model } = {}) {
   }
 
   const cfg = getJevConfig();
-  if (!cfg.apiKey) {
-    throw new JevError(
-      "TYPESAFE_API_KEY 未设置。到 https://console.typesafe.ai 创建 key，再 export TYPESAFE_API_KEY=..."
-    );
-  }
+  if (!cfg.provider) throw missingKeyError();
 
   const payload = {
     state,
@@ -54,17 +87,23 @@ export async function systemOne({ state, questions, model } = {}) {
     questions,
   };
 
+  const headers = {
+    Authorization: `Bearer ${cfg.apiKey}`,
+    "Content-Type": "application/json",
+  };
+  if (cfg.provider === "openrouter") {
+    if (cfg.referer) headers["HTTP-Referer"] = cfg.referer;
+    if (cfg.title) headers["X-OpenRouter-Title"] = cfg.title;
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
 
   let res;
   try {
-    res = await fetch(`${cfg.baseUrl}/systemone`, {
+    res = await fetch(cfg.url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.apiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -86,11 +125,39 @@ export async function systemOne({ state, questions, model } = {}) {
   }
 
   if (!res.ok) {
-    const detail = body?.error?.message || body?.message || text || res.statusText;
-    throw new JevError(`Jev API ${res.status}: ${detail}`, { status: res.status, body });
+    const detail =
+      body?.error?.message ||
+      body?.message ||
+      (typeof body?.error === "string" ? body.error : null) ||
+      text ||
+      res.statusText;
+    throw new JevError(`Jev API ${res.status} (${cfg.provider}): ${detail}`, { status: res.status, body });
   }
 
-  return body;
+  // Normalize: OpenRouter Decisions may wrap answers; prefer top-level answers.
+  const answers = body.answers || body.data?.answers || body;
+  const usage = body.usage || body.data?.usage;
+  const usedModel = body.model || body.data?.model || payload.model;
+
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) {
+    throw new JevError(`Jev response missing answers (${cfg.provider})`, { status: res.status, body });
+  }
+
+  // If body itself was mistaken for answers (no .answers field), ensure shape looks like answer map
+  const sample = Object.values(answers)[0];
+  if (sample && typeof sample === "object" && !("type" in sample) && !("noul" in sample) && !("choice" in sample) && !("score" in sample)) {
+    // Might have returned full body without answers — fail clearly
+    if (!body.answers) {
+      throw new JevError(`Unexpected Jev response shape (${cfg.provider})`, { status: res.status, body });
+    }
+  }
+
+  return {
+    model: usedModel,
+    answers: body.answers || answers,
+    usage,
+    provider: cfg.provider,
+  };
 }
 
 /**
@@ -166,7 +233,8 @@ export async function routeMessage({ content, topic, from, agents, threshold } =
     model: result.model,
     answers: result.answers,
     usage: result.usage,
+    provider: result.provider,
   };
 }
 
-export { DEFAULT_ROUTE_THRESHOLD, DEFAULT_MODEL };
+export { DEFAULT_ROUTE_THRESHOLD, TYPESAFE_MODEL as DEFAULT_MODEL, OPENROUTER_MODEL };

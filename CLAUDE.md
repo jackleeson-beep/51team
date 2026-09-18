@@ -13,7 +13,7 @@ MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent
 3. 等待约 1-2 分钟（team-up.sh 自动等 Agent 就绪、注册、投规则）
 4. 用 MCP 工具 `list_agents` 确认所有人已注册
 5. `send_message(from='pm', to='auto'|具体角色, topic='kickoff', content='...')` 发布任务：
-   - 有 `TYPESAFE_API_KEY` 时优先 `to='auto'`，让 Jev 按角色智能路由
+   - 有 `OPENROUTER_API_KEY` 或 `TYPESAFE_API_KEY` 时优先 `to='auto'`，让 Jev 按角色智能路由
    - 或 `route_message` 先预览分数，再定点发送
    - 告诉每人**一个**具体任务和期望输出
    - 一次只分配一个任务，不要广播所有计划
@@ -51,7 +51,7 @@ MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent
 
 ### Jev（TypeSafe System One）
 
-设置 `TYPESAFE_API_KEY` 后启用：
+设置 `OPENROUTER_API_KEY`（推荐，OpenRouter 免排队）或 `TYPESAFE_API_KEY` 后启用：
 
 - `send_message(to='auto')` — 按内容+角色 noul 智能送达，避免无谓广播
 - `route_message` — 只预览路由分数，不发送
@@ -59,8 +59,9 @@ MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent
 - `register_agent(..., role='...')` — 写入职责描述，提升路由准确度
 
 ```bash
-export TYPESAFE_API_KEY=...   # https://console.typesafe.ai
-51team restart                # 让 Router 读到新环境变量
+export OPENROUTER_API_KEY=sk-or-...   # https://openrouter.ai/keys
+# 或: export TYPESAFE_API_KEY=...    # https://console.typesafe.ai
+51team restart
 ```
 
 ## 架构

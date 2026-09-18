@@ -62,6 +62,8 @@ cat > "$LAUNCH_DIR/com.51team.router.plist" <<PLIST
         <string>${PORT}</string>
         <key>TYPESAFE_API_KEY</key>
         <string>${TYPESAFE_API_KEY:-}</string>
+        <key>OPENROUTER_API_KEY</key>
+        <string>${OPENROUTER_API_KEY:-}</string>
     </dict>
 </dict>
 </plist>

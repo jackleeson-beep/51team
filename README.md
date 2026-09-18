@@ -141,14 +141,18 @@ CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队。然
 | `jev_decide` | 调用 TypeSafe Jev 做 noul/choice/score 决策 |
 | `route_message` | 预览 Jev 路由分数（不发送） |
 
-## Jev 智能路由（TypeSafe）
+## Jev 智能路由（TypeSafe / OpenRouter）
 
-[Jev](https://typesafe.ai) 是 TypeSafe 的 System One 决策模型：输入 state + 结构化问题，输出概率，不做文本生成。51team 用它做**消息扇出路由**——只叫醒相关角色，减少广播噪音。
+[Jev](https://typesafe.ai) 是 TypeSafe 的 System One 决策模型：输入 state + 结构化问题，输出概率，不做文本生成。51team 用它做**消息扇出路由**。
+
+**推荐走 OpenRouter（免排队）：**
 
 ```bash
-export TYPESAFE_API_KEY=ts_...   # https://console.typesafe.ai
+export OPENROUTER_API_KEY=sk-or-...   # https://openrouter.ai/keys
 51team restart
 ```
+
+也支持原生 TypeSafe key（`TYPESAFE_API_KEY`，需 early access）。
 
 ```
 # 预览
@@ -203,9 +207,11 @@ node health-check.js
 | 变量 | 默认值 | 用途 |
 |------|--------|------|
 | `MCP_BRIDGE_PORT` | 9876 | Router 端口 |
-| `TYPESAFE_API_KEY` | — | TypeSafe Jev API key |
-| `TYPESAFE_MODEL` | jev-latest | Jev 模型别名 |
-| `TYPESAFE_BASE_URL` | https://api.typesafe.ai/v1 | API 基址 |
+| `OPENROUTER_API_KEY` | — | OpenRouter key（推荐，Jev 免排队） |
+| `OPENROUTER_JEV_MODEL` | ~typesafe/jev-latest | OpenRouter 上的 Jev 模型 |
+| `TYPESAFE_API_KEY` | — | TypeSafe 原生 Jev API key |
+| `TYPESAFE_MODEL` | jev-latest | TypeSafe 模型别名 |
+| `TYPESAFE_BASE_URL` | https://api.typesafe.ai/v1 | TypeSafe API 基址 |
 | `ANTHROPIC_MODEL` | deepseek-v4-flash | Agent 模型 |
 | `CLAUDE_CODE_EFFORT_LEVEL` | low | Agent effort |
 

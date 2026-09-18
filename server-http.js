@@ -37,6 +37,7 @@ import {
   systemOne,
   routeMessage,
   isJevConfigured,
+  getJevProvider,
   JevError,
   DEFAULT_ROUTE_THRESHOLD,
 } from "./jev.js";
@@ -95,7 +96,7 @@ const handlers = {
       if (!isJevConfigured()) {
         return {
           ok: false,
-          text: "to='auto' 需要 Jev。请设置 TYPESAFE_API_KEY（https://console.typesafe.ai）",
+          text: "to='auto' 需要 Jev。推荐: export OPENROUTER_API_KEY=...（https://openrouter.ai/keys），或 TYPESAFE_API_KEY",
         };
       }
       const candidates = agentNames
@@ -177,7 +178,7 @@ const handlers = {
       online: sessionExists(agents[n].tmuxSession),
     }));
     const text = names.length === 0 ? "没有已注册的 Agent" : `${names.length} Agent: ` + names.join(", ");
-    return { ok: true, text, count: names.length, agents: list, jev: isJevConfigured() };
+    return { ok: true, text, count: names.length, agents: list, jev: isJevConfigured(), jev_provider: getJevProvider() };
   },
 
   /**
@@ -188,7 +189,7 @@ const handlers = {
     if (!isJevConfigured()) {
       return {
         ok: false,
-        text: "TYPESAFE_API_KEY 未设置。到 https://console.typesafe.ai 创建 key 后 export TYPESAFE_API_KEY=...",
+        text: "未配置 Jev。推荐: export OPENROUTER_API_KEY=...（https://openrouter.ai/keys），或 TYPESAFE_API_KEY",
       };
     }
     let parsed = questions;
@@ -222,9 +223,10 @@ const handlers = {
       });
       return {
         ok: true,
-        text: `Jev OK · ${keys.length} answers`,
+        text: `Jev OK (${result.provider || getJevProvider()}) · ${keys.length} answers`,
         summary,
         model: result.model,
+        provider: result.provider || getJevProvider(),
         answers: result.answers,
         usage: result.usage,
       };
@@ -240,7 +242,7 @@ const handlers = {
     if (!isJevConfigured()) {
       return {
         ok: false,
-        text: "TYPESAFE_API_KEY 未设置。到 https://console.typesafe.ai 创建 key 后 export TYPESAFE_API_KEY=...",
+        text: "未配置 Jev。推荐: export OPENROUTER_API_KEY=...（https://openrouter.ai/keys），或 TYPESAFE_API_KEY",
       };
     }
     const agents = getAgents();
@@ -294,7 +296,7 @@ const toolDefs = [
   { name: "unregister_agent", description: "注销 Agent。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
   {
     name: "send_message",
-    description: "向其他 Agent 发送消息。to='all' 广播；to='auto' 用 Jev 按角色/内容智能路由（需 TYPESAFE_API_KEY）。务必填写 from 标明身份。",
+    description: "向其他 Agent 发送消息。to='all' 广播；to='auto' 用 Jev 智能路由（需 OPENROUTER_API_KEY 或 TYPESAFE_API_KEY）。务必填写 from 标明身份。",
     inputSchema: {
       type: "object",
       properties: {
@@ -314,7 +316,7 @@ const toolDefs = [
   { name: "clear_all", description: "清除所有 Agent 和消息（用于测试重置）。", inputSchema: { type: "object", properties: {}, required: [] } },
   {
     name: "jev_decide",
-    description: "调用 TypeSafe Jev（System One）做结构化决策。传入 state + questions（noul/choice/score），返回概率与置信度。需 TYPESAFE_API_KEY。",
+    description: "调用 TypeSafe Jev（System One）做结构化决策。传入 state + questions（noul/choice/score）。需 OPENROUTER_API_KEY（推荐）或 TYPESAFE_API_KEY。",
     inputSchema: {
       type: "object",
       properties: {
@@ -322,14 +324,14 @@ const toolDefs = [
         questions: {
           description: "问题 map，或 JSON 字符串。例：{\"urgent\":{\"type\":\"noul\",\"instructions\":\"是否紧急？\"}}",
         },
-        model: { type: "string", description: "默认 jev-latest" },
+        model: { type: "string", description: "默认 ~typesafe/jev-latest（OpenRouter）或 jev-latest" },
       },
       required: ["state", "questions"],
     },
   },
   {
     name: "route_message",
-    description: "用 Jev 预览消息应发给哪些 Agent（不实际发送）。看完分数后再 send_message。需 TYPESAFE_API_KEY。",
+    description: "用 Jev 预览消息应发给哪些 Agent（不实际发送）。需 OPENROUTER_API_KEY 或 TYPESAFE_API_KEY。",
     inputSchema: {
       type: "object",
       properties: {
@@ -603,6 +605,7 @@ const httpServer = http.createServer(async (req, res) => {
       agents: Object.keys(agents).length,
       messages: getMessages().length,
       jev: isJevConfigured(),
+      jev_provider: getJevProvider(),
     }));
     return;
   }
