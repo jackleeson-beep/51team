@@ -97,8 +97,8 @@ cd 51team
 
 CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队。然后你只需要发消息：
 
-1. `send_message(from='pm', to='all', topic='kickoff', content='给官网设计新风格')`
-2. agnet 收到后自动开工
+1. `send_message(from='pm', to='auto', topic='kickoff', content='给官网设计新风格')`（需配置 Jev）或 `to='all'` / 指定角色
+2. agent 收到后自动开工
 3. 想看进展时 `check_messages`
 
 ### 手动组队
@@ -114,7 +114,8 @@ CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队。然
 
   下一步（主 session 用 MCP 工具）:
     list_agents         确认全员在线
-    send_message(to=all) 发布任务
+    send_message(to=auto) Jev 智能路由（可选）
+    send_message(to=all) 广播任务
     check_messages      看回复
   退出团队: 51team destroy myapp
 ```
@@ -131,12 +132,40 @@ CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队。然
 
 | 工具 | 用途 |
 |------|------|
-| `register_agent` | Agent 启动时注册到 Router |
-| `send_message` | 发消息（to='all' 广播，或指定角色） |
+| `register_agent` | Agent 启动时注册到 Router（可选 `role` 供 Jev 路由） |
+| `send_message` | 发消息：`to` 为角色名 / `all` / `auto`（Jev 智能路由） |
 | `check_messages` | 查看未读消息 |
 | `read_messages` | 读消息全文（自动标记已读） |
 | `list_agents` | 列出所有 Agent 及在线状态 |
 | `heartbeat` | 心跳保活（agent 自动调用） |
+| `jev_decide` | 调用 TypeSafe Jev 做 noul/choice/score 决策 |
+| `route_message` | 预览 Jev 路由分数（不发送） |
+
+## Jev 智能路由（TypeSafe / OpenRouter）
+
+[Jev](https://typesafe.ai) 是 TypeSafe 的 System One 决策模型：输入 state + 结构化问题，输出概率，不做文本生成。51team 用它做**消息扇出路由**。
+
+**推荐走 OpenRouter（免排队）：**
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...   # https://openrouter.ai/keys
+51team restart
+```
+
+也支持原生 TypeSafe key（`TYPESAFE_API_KEY`，需 early access）。
+
+```
+# 预览
+route_message(from='pm', content='首页 hero 配色太花，请改')
+
+# 或直接智能发送
+send_message(from='pm', to='auto', content='首页 hero 配色太花，请改')
+
+# 通用决策
+jev_decide(state='...', questions='{"urgent":{"type":"noul","instructions":"是否紧急？"}}')
+```
+
+未设置 API key 时，`to=all` / 定点发送照常可用；`to=auto` 与 `jev_decide` 会返回明确错误。
 
 ## 架构
 
@@ -145,20 +174,25 @@ CLAUDE.md 会引导 Claude Code 执行 `51team team`，创建 agent 团队。然
                      │   MCP Router :9876    │
                      │   · Agent 注册/消息   │
  tmux: project-      │   · SSE session 管理  │     tmux: project-
- designer            │   · Web Dashboard     │     engineer
+ designer            │   · Jev 智能路由(可选)│     engineer
+     │               │   · Web Dashboard     │         │
      │               └──────────────────────┘         │
      │                      │    │                    │
      └────── send_message ──┘    └── SSE / JSON-RPC ──┘
 ```
 
 - **Router**（`server-http.js`）— 手动实现 SSE + JSON-RPC，零外部依赖。每个 agent 独立 session，断连 30 秒内可重建。
+- **jev.js** — TypeSafe System One 客户端（原生 `fetch`，无 npm 包）。
 - **tmux** — Agent 运行容器。`while true` 循环确保 claude 退出后自动重生。
 - **LaunchAgent** — macOS 开机自启，Router 崩溃后自动拉起。
 
 ## 测试
 
 ```bash
-# 回归测试（25 项，5 秒）
+# Jev 单元测试（mock，无需 API key）
+node test-jev.js
+
+# 回归测试（含 Jev 工具，约 5 秒）
 bash test-bugs-regression.sh
 
 # Session resume 测试（~45 秒）
@@ -173,6 +207,11 @@ node health-check.js
 | 变量 | 默认值 | 用途 |
 |------|--------|------|
 | `MCP_BRIDGE_PORT` | 9876 | Router 端口 |
+| `OPENROUTER_API_KEY` | — | OpenRouter key（推荐，Jev 免排队） |
+| `OPENROUTER_JEV_MODEL` | ~typesafe/jev-latest | OpenRouter 上的 Jev 模型 |
+| `TYPESAFE_API_KEY` | — | TypeSafe 原生 Jev API key |
+| `TYPESAFE_MODEL` | jev-latest | TypeSafe 模型别名 |
+| `TYPESAFE_BASE_URL` | https://api.typesafe.ai/v1 | TypeSafe API 基址 |
 | `ANTHROPIC_MODEL` | deepseek-v4-flash | Agent 模型 |
 | `CLAUDE_CODE_EFFORT_LEVEL` | low | Agent effort |
 

@@ -33,17 +33,35 @@ import {
 } from "./store-memory.js";
 
 import { sessionExists, notifyAgent } from "./tmux.js";
+import {
+  systemOne,
+  routeMessage,
+  isJevConfigured,
+  getJevProvider,
+  JevError,
+  DEFAULT_ROUTE_THRESHOLD,
+} from "./jev.js";
 
 const PORT = process.env.MCP_BRIDGE_PORT || 9876;
+
+/** Deliver a stored message + tmux notify to one agent. */
+function deliverTo(from, to, topic, content, agents) {
+  sendMessage(from, to, content, topic);
+  const target = agents[to];
+  if (!target) return { name: to, notified: false };
+  const ok = notifyAgent(target.tmuxSession, from, topic, content);
+  return { name: to, notified: ok };
+}
 
 // ═══════════════════════════════════════════
 //  Tool handlers (shared by MCP + /api/call)
 // ═══════════════════════════════════════════
 
 const handlers = {
-  async register_agent({ agent_name, tmux_session }) {
-    registerAgent(agent_name, tmux_session);
-    return { ok: true, text: `Agent "${agent_name}" 已注册。session: ${tmux_session}` };
+  async register_agent({ agent_name, tmux_session, role }) {
+    registerAgent(agent_name, tmux_session, role);
+    const roleNote = role?.trim() ? ` · role: ${role.trim()}` : "";
+    return { ok: true, text: `Agent "${agent_name}" 已注册。session: ${tmux_session}${roleNote}` };
   },
 
   async unregister_agent({ agent_name }) {
@@ -63,36 +81,76 @@ const handlers = {
     return { ok: true, text: "所有 Agent 和消息已清除" };
   },
 
-  async send_message({ from, to, topic, content }) {
+  async send_message({ from, to, topic, content, threshold }) {
     const agents = getAgents();
     const agentNames = Object.keys(agents);
     if (agentNames.length === 0) return { ok: false, text: "没有已注册的 Agent" };
 
-    const results = [];
-    let notifyOk = 0;
-    let notifyFail = 0;
+    let targets;
+    let routeMeta = null;
+
     if (to === "all") {
-      const targets = agentNames.filter((n) => n !== from);
+      targets = agentNames.filter((n) => n !== from);
       if (targets.length === 0) return { ok: false, text: "没有其他 Agent 可广播" };
-      for (const targetName of targets) {
-        sendMessage(from, targetName, content, topic);
-        const target = agents[targetName];
-        if (target) {
-          const ok = notifyAgent(target.tmuxSession, from, topic, content);
-          if (ok) notifyOk++; else notifyFail++;
-        }
-        results.push(targetName);
+    } else if (to === "auto") {
+      if (!isJevConfigured()) {
+        return {
+          ok: false,
+          text: "to='auto' 需要 Jev。推荐: export OPENROUTER_API_KEY=...（https://openrouter.ai/keys），或 TYPESAFE_API_KEY",
+        };
+      }
+      const candidates = agentNames
+        .filter((n) => n !== from)
+        .map((n) => ({ name: n, role: agents[n].role || "" }));
+      if (candidates.length === 0) return { ok: false, text: "没有其他 Agent 可路由" };
+      try {
+        const routed = await routeMessage({
+          content,
+          topic,
+          from,
+          agents: candidates,
+          threshold: typeof threshold === "number" ? threshold : undefined,
+        });
+        targets = routed.selected;
+        routeMeta = {
+          scored: routed.scored,
+          threshold: routed.threshold,
+          model: routed.model,
+          usage: routed.usage,
+        };
+        log(`[jev] route from=${from} → ${targets.join(",")} scored=${JSON.stringify(routed.scored)}`);
+      } catch (e) {
+        const msg = e instanceof JevError ? e.message : e.message;
+        return { ok: false, text: `Jev 路由失败: ${msg}` };
       }
     } else {
       if (!agents[to]) return { ok: false, text: `Agent "${to}" 未注册。已注册: ${agentNames.join(", ")}` };
-      sendMessage(from, to, content, topic);
-      const ok = notifyAgent(agents[to].tmuxSession, from, topic, content);
-      if (ok) notifyOk++; else notifyFail++;
-      results.push(to);
+      targets = [to];
     }
+
+    const results = [];
+    let notifyOk = 0;
+    let notifyFail = 0;
+    for (const targetName of targets) {
+      const d = deliverTo(from, targetName, topic, content, agents);
+      results.push(d.name);
+      if (d.notified) notifyOk++; else notifyFail++;
+    }
+
     const statusParts = [`已送达: ${results.join(", ")}`];
+    if (to === "auto" && routeMeta) {
+      const scoreStr = routeMeta.scored
+        .map((s) => `${s.name}=${s.noul.toFixed(2)}`)
+        .join(" ");
+      statusParts.push(`(Jev auto · thr=${routeMeta.threshold} · ${scoreStr})`);
+    }
     if (notifyFail > 0) statusParts.push(`(tmux 通知: ${notifyOk} ✓, ${notifyFail} ✗)`);
-    return { ok: true, text: statusParts.join(" "), detail: results };
+    return {
+      ok: true,
+      text: statusParts.join(" "),
+      detail: results,
+      ...(routeMeta ? { route: routeMeta } : {}),
+    };
   },
 
   async check_messages({ agent_name }) {
@@ -113,9 +171,107 @@ const handlers = {
   async list_agents() {
     const agents = getAgents();
     const names = Object.keys(agents);
-    const list = names.map((n) => ({ name: n, session: agents[n].tmuxSession, online: sessionExists(agents[n].tmuxSession) }));
+    const list = names.map((n) => ({
+      name: n,
+      session: agents[n].tmuxSession,
+      role: agents[n].role || "",
+      online: sessionExists(agents[n].tmuxSession),
+    }));
     const text = names.length === 0 ? "没有已注册的 Agent" : `${names.length} Agent: ` + names.join(", ");
-    return { ok: true, text, count: names.length, agents: list };
+    return { ok: true, text, count: names.length, agents: list, jev: isJevConfigured(), jev_provider: getJevProvider() };
+  },
+
+  /**
+   * General Jev decide: pass state + typed questions, get structured answers.
+   * questions: object or JSON string of { id: { type, instructions, criteria? } }
+   */
+  async jev_decide({ state, questions, model }) {
+    if (!isJevConfigured()) {
+      return {
+        ok: false,
+        text: "未配置 Jev。推荐: export OPENROUTER_API_KEY=...（https://openrouter.ai/keys），或 TYPESAFE_API_KEY",
+      };
+    }
+    let parsed = questions;
+    if (typeof questions === "string") {
+      try {
+        parsed = JSON.parse(questions);
+      } catch (e) {
+        return { ok: false, text: `questions JSON 解析失败: ${e.message}` };
+      }
+    }
+    let parsedState = state;
+    if (typeof state === "string") {
+      const trimmed = state.trim();
+      if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+        try {
+          parsedState = JSON.parse(trimmed);
+        } catch {
+          // keep as string
+        }
+      }
+    }
+    try {
+      const result = await systemOne({ state: parsedState, questions: parsed, model });
+      const keys = Object.keys(result.answers || {});
+      const summary = keys.map((k) => {
+        const a = result.answers[k];
+        if (a.type === "noul") return `${k}: noul=${a.noul}`;
+        if (a.type === "choice") return `${k}: ${a.choice} (conf=${a.confidence})`;
+        if (a.type === "score") return `${k}: score=${a.score} (conf=${a.confidence})`;
+        return `${k}: ${JSON.stringify(a)}`;
+      });
+      return {
+        ok: true,
+        text: `Jev OK (${result.provider || getJevProvider()}) · ${keys.length} answers`,
+        summary,
+        model: result.model,
+        provider: result.provider || getJevProvider(),
+        answers: result.answers,
+        usage: result.usage,
+      };
+    } catch (e) {
+      return { ok: false, text: e instanceof JevError ? e.message : e.message };
+    }
+  },
+
+  /**
+   * Preview Jev routing without sending. Useful for PM to inspect scores.
+   */
+  async route_message({ from, content, topic, threshold }) {
+    if (!isJevConfigured()) {
+      return {
+        ok: false,
+        text: "未配置 Jev。推荐: export OPENROUTER_API_KEY=...（https://openrouter.ai/keys），或 TYPESAFE_API_KEY",
+      };
+    }
+    const agents = getAgents();
+    const candidates = Object.keys(agents)
+      .filter((n) => n !== from)
+      .map((n) => ({ name: n, role: agents[n].role || "" }));
+    if (candidates.length === 0) return { ok: false, text: "没有可路由的 Agent（先 register_agent）" };
+    try {
+      const routed = await routeMessage({
+        content,
+        topic,
+        from,
+        agents: candidates,
+        threshold: typeof threshold === "number" ? threshold : undefined,
+      });
+      const scoreStr = routed.scored.map((s) => `${s.name}=${s.noul.toFixed(3)}`).join(" ");
+      return {
+        ok: true,
+        text: `建议送达: ${routed.selected.join(", ")} · thr=${routed.threshold} · ${scoreStr}`,
+        selected: routed.selected,
+        scored: routed.scored,
+        threshold: routed.threshold,
+        model: routed.model,
+        answers: routed.answers,
+        usage: routed.usage,
+      };
+    } catch (e) {
+      return { ok: false, text: e instanceof JevError ? e.message : e.message };
+    }
   },
 };
 
@@ -124,14 +280,69 @@ const handlers = {
 // ═══════════════════════════════════════════
 
 const toolDefs = [
-  { name: "register_agent", description: "注册当前 Agent 到通讯路由。绑定自己所在的 tmux session。", inputSchema: { type: "object", properties: { agent_name: { type: "string" }, tmux_session: { type: "string" } }, required: ["agent_name", "tmux_session"] } },
+  {
+    name: "register_agent",
+    description: "注册当前 Agent 到通讯路由。绑定自己所在的 tmux session。可选 role 描述职责，供 Jev 智能路由使用。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_name: { type: "string" },
+        tmux_session: { type: "string" },
+        role: { type: "string", description: "职责简述，例如「前端 UI / 设计系统」" },
+      },
+      required: ["agent_name", "tmux_session"],
+    },
+  },
   { name: "unregister_agent", description: "注销 Agent。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
-  { name: "send_message", description: "向其他 Agent 发送消息。to='all' 广播。务必填写 from 标明身份。", inputSchema: { type: "object", properties: { from: { type: "string" }, to: { type: "string" }, topic: { type: "string" }, content: { type: "string" } }, required: ["from", "to", "content"] } },
+  {
+    name: "send_message",
+    description: "向其他 Agent 发送消息。to='all' 广播；to='auto' 用 Jev 智能路由（需 OPENROUTER_API_KEY 或 TYPESAFE_API_KEY）。务必填写 from 标明身份。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        from: { type: "string" },
+        to: { type: "string", description: "目标 agent 名，或 'all' / 'auto'" },
+        topic: { type: "string" },
+        content: { type: "string" },
+        threshold: { type: "number", description: "仅 to=auto：noul 阈值阈值，默认 0.45" },
+      },
+      required: ["from", "to", "content"],
+    },
+  },
   { name: "check_messages", description: "检查未读消息。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
   { name: "read_messages", description: "读取未读消息全文，自动标记已读。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
   { name: "list_agents", description: "列出所有已注册 Agent 及在线状态。", inputSchema: { type: "object", properties: {}, required: [] } },
   { name: "heartbeat", description: "发送心跳以维持在线状态。每 2 分钟调用一次，否则 5 分钟后自动注销。", inputSchema: { type: "object", properties: { agent_name: { type: "string" } }, required: ["agent_name"] } },
   { name: "clear_all", description: "清除所有 Agent 和消息（用于测试重置）。", inputSchema: { type: "object", properties: {}, required: [] } },
+  {
+    name: "jev_decide",
+    description: "调用 TypeSafe Jev（System One）做结构化决策。传入 state + questions（noul/choice/score）。需 OPENROUTER_API_KEY（推荐）或 TYPESAFE_API_KEY。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        state: { description: "要评估的上下文：字符串或 JSON 对象" },
+        questions: {
+          description: "问题 map，或 JSON 字符串。例：{\"urgent\":{\"type\":\"noul\",\"instructions\":\"是否紧急？\"}}",
+        },
+        model: { type: "string", description: "默认 ~typesafe/jev-latest（OpenRouter）或 jev-latest" },
+      },
+      required: ["state", "questions"],
+    },
+  },
+  {
+    name: "route_message",
+    description: "用 Jev 预览消息应发给哪些 Agent（不实际发送）。需 OPENROUTER_API_KEY 或 TYPESAFE_API_KEY。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        from: { type: "string" },
+        content: { type: "string" },
+        topic: { type: "string" },
+        threshold: { type: "number", description: "noul 阈值，默认 0.45" },
+      },
+      required: ["content"],
+    },
+  },
 ];
 
 // Tool result → MCP content wrapper
@@ -140,7 +351,20 @@ function mcpContent(result) {
     ? `${result.ok ? "✅ " : ""}${result.text}`
     : `⚠️ ${result.text}`;
   const extra = result.summary ? "\n" + result.summary.join("\n") : "";
-  return [{ type: "text", text: text + extra }];
+  let payload = text + extra;
+  if (result.answers) {
+    payload += "\n" + JSON.stringify({ answers: result.answers, usage: result.usage, model: result.model }, null, 2);
+  } else if (result.route) {
+    payload += "\n" + JSON.stringify({ route: result.route }, null, 2);
+  } else if (result.selected) {
+    payload += "\n" + JSON.stringify({
+      selected: result.selected,
+      scored: result.scored,
+      threshold: result.threshold,
+      usage: result.usage,
+    }, null, 2);
+  }
+  return [{ type: "text", text: payload }];
 }
 
 // ═══════════════════════════════════════════
@@ -166,7 +390,7 @@ async function handleJsonRpc(msg) {
   const { id, method, params } = msg;
   switch (method) {
     case "initialize":
-      return { jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", serverInfo: { name: "51team", version: "2.0.0" }, capabilities: { tools: {} } } };
+      return { jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", serverInfo: { name: "51team", version: "2.1.0" }, capabilities: { tools: {} } } };
     case "tools/list":
       return { jsonrpc: "2.0", id, result: { tools: toolDefs } };
     case "tools/call": {
@@ -380,6 +604,8 @@ const httpServer = http.createServer(async (req, res) => {
       status: "ok",
       agents: Object.keys(agents).length,
       messages: getMessages().length,
+      jev: isJevConfigured(),
+      jev_provider: getJevProvider(),
     }));
     return;
   }

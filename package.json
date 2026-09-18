@@ -1,11 +1,13 @@
 {
   "name": "51team",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "我要 team — MCP + tmux multi-agent collaboration framework for Claude Code",
   "type": "module",
   "main": "server-http.js",
   "scripts": {
-    "start": "node server-http.js"
+    "start": "node server-http.js",
+    "test:jev": "node test-jev.js",
+    "test:regression": "bash test-bugs-regression.sh"
   },
   "dependencies": {}
 }

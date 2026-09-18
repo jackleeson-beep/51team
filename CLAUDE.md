@@ -12,7 +12,9 @@ MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent
 2. `51team team <项目名> '<角色1,角色2>' '<任务描述>'` — 不超过 5 个角色
 3. 等待约 1-2 分钟（team-up.sh 自动等 Agent 就绪、注册、投规则）
 4. 用 MCP 工具 `list_agents` 确认所有人已注册
-5. `send_message(from='pm', to='all', topic='kickoff', content='...')` 发布任务：
+5. `send_message(from='pm', to='auto'|具体角色, topic='kickoff', content='...')` 发布任务：
+   - 有 `OPENROUTER_API_KEY` 或 `TYPESAFE_API_KEY` 时优先 `to='auto'`，让 Jev 按角色智能路由
+   - 或 `route_message` 先预览分数，再定点发送
    - 告诉每人**一个**具体任务和期望输出
    - 一次只分配一个任务，不要广播所有计划
    - 说明汇报格式（写到哪个文件、回复什么内容）
@@ -45,7 +47,22 @@ MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent
 
 ## MCP 工具
 
-`register_agent` · `unregister_agent` · `send_message` · `check_messages` · `read_messages` · `list_agents` · `heartbeat` · `clear_all`
+`register_agent` · `unregister_agent` · `send_message` · `check_messages` · `read_messages` · `list_agents` · `heartbeat` · `clear_all` · `jev_decide` · `route_message`
+
+### Jev（TypeSafe System One）
+
+设置 `OPENROUTER_API_KEY`（推荐，OpenRouter 免排队）或 `TYPESAFE_API_KEY` 后启用：
+
+- `send_message(to='auto')` — 按内容+角色 noul 智能送达，避免无谓广播
+- `route_message` — 只预览路由分数，不发送
+- `jev_decide` — 通用结构化决策（noul / choice / score）
+- `register_agent(..., role='...')` — 写入职责描述，提升路由准确度
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...   # https://openrouter.ai/keys
+# 或: export TYPESAFE_API_KEY=...    # https://console.typesafe.ai
+51team restart
+```
 
 ## 架构
 
@@ -53,11 +70,14 @@ MCP + tmux 多 Agent 协作框架。通过 `51team team` 命令创建 tmux Agent
 Agent A ←→ tmux ←→ MCP Router (:9876) ←→ tmux ←→ Agent B
                          │
                    Web Dashboard
+                         │
+              Jev / TypeSafe API（可选）
 ```
 
 - **MCP Router** (`server-http.js`) — 中心消息路由，手动 SSE + JSON-RPC，零外部依赖
 - **tmux** — Agent 间通知通道，send-keys 注入终端
 - **store-memory.js** — 内存存储 + JSON 持久化
+- **jev.js** — TypeSafe Jev 客户端（原生 fetch，无 npm 依赖）
 
 ## 关键文件
 
@@ -66,13 +86,15 @@ Agent A ←→ tmux ←→ MCP Router (:9876) ←→ tmux ←→ Agent B
 | `51team` | 统一 CLI 入口 |
 | `server-http.js` | Router：SSE + JSON-RPC + HTTP API + Dashboard |
 | `store-memory.js` | 数据层：agents/messages CRUD，持久化，心跳 |
+| `jev.js` | TypeSafe Jev System One 客户端 + 智能路由 |
 | `tmux.js` | tmux：session 检测、send-keys、notifyAgent |
 | `team-up.sh` | 一键组队：创建 tmux session、启动 Claude Code agent |
 | `install.sh` | 安装：CLI symlink + LaunchAgent + MCP 配置 |
 
 ## 设计要点
 
-- 零外部依赖（Node 标准库 only）
+- 零外部依赖（Node 标准库 only；Jev 用原生 fetch）
 - Agent TTL 5 分钟，心跳间隔 2 分钟
 - 消息上限 10,000，超出自动修剪
 - Router 重启后消息不丢失（state.json 持久化）
+- Jev 未配置时，`to=all` / 定点发送照常工作；`to=auto` / `jev_decide` 返回明确错误
