@@ -60,6 +60,8 @@ cat > "$LAUNCH_DIR/com.51team.router.plist" <<PLIST
         <string>${HOME}</string>
         <key>MCP_BRIDGE_PORT</key>
         <string>${PORT}</string>
+        <key>TYPESAFE_API_KEY</key>
+        <string>${TYPESAFE_API_KEY:-}</string>
     </dict>
 </dict>
 </plist>

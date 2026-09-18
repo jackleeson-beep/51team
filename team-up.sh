@@ -118,9 +118,9 @@ for role in "${ROLES[@]}"; do
     SESSION="${PROJECT}-${role}"
 
     if [ -n "$TASK" ]; then
-      PROMPT="你是 ${PROJECT} 项目的 ${role}。Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}'。Step2 list_agents。Step3 send_message from='${role}' to='all' content='自我介绍：我是${role}，已就位'。之后持续在线，不主动找活。有人 send_message 涉及你的领域就干活，方案变化或卡住就发言，没事就安静挂着。每轮结束 check_messages 看有没有人找你。每 2 分钟 heartbeat agent_name='${role}'。"
+      PROMPT="你是 ${PROJECT} 项目的 ${role}。Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}' role='${role} for ${PROJECT}'。Step2 list_agents。Step3 send_message from='${role}' to='all' content='自我介绍：我是${role}，已就位'。之后持续在线，不主动找活。有人 send_message 涉及你的领域就干活，方案变化或卡住就发言，没事就安静挂着。每轮结束 check_messages 看有没有人找你。每 2 分钟 heartbeat agent_name='${role}'。"
     else
-      PROMPT="你是 ${PROJECT} 项目的 ${role}。Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}'。Step2 list_agents。Step3 send_message from='${role}' to='all' content='自我介绍：我是${role}，已就位'。之后持续在线，不主动找活。有人 send_message 涉及你的领域就干活，方案变化或卡住就发言，没事就安静挂着。每轮结束 check_messages 看有没有人找你。每 2 分钟 heartbeat agent_name='${role}'。"
+      PROMPT="你是 ${PROJECT} 项目的 ${role}。Step1 call register_agent agent_name='${role}' tmux_session='${SESSION}' role='${role} for ${PROJECT}'。Step2 list_agents。Step3 send_message from='${role}' to='all' content='自我介绍：我是${role}，已就位'。之后持续在线，不主动找活。有人 send_message 涉及你的领域就干活，方案变化或卡住就发言，没事就安静挂着。每轮结束 check_messages 看有没有人找你。每 2 分钟 heartbeat agent_name='${role}'。"
     fi
 
     if wait_for_claude_ready "$SESSION" 120; then
@@ -149,7 +149,8 @@ done
 echo "╠══════════════════════════════════════════════════╣"
 echo "║  下一步（主 session 用 MCP 工具）:              ║"
 echo "║    list_agents         确认全员在线              ║"
-echo "║    send_message(to=all) 发布任务                ║"
+echo "║    send_message(to=auto) Jev 智能路由（可选）   ║"
+echo "║    send_message(to=all) 广播任务                ║"
 echo "║    check_messages      看回复                   ║"
 echo "║  退出团队: 51team destroy ${PROJECT}             ║"
 echo "╠══════════════════════════════════════════════════╣"

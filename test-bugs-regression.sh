@@ -178,6 +178,46 @@ else
   fail "list_agents: $LIST"
 fi
 
+# ── 3b. Jev tools (no API key required for negative paths) ──
+echo ""
+echo "── 3b. Jev integration ──"
+
+# register with role
+REG_ROLE=$(curl_api '{"tool":"register_agent","args":{"agent_name":"test-2","tmux_session":"test-session-role","role":"UI designer"}}')
+if echo "$REG_ROLE" | grep -q '"ok".*true' && echo "$REG_ROLE" | grep -q 'role'; then
+  ok "register_agent with role"
+else
+  fail "register_agent with role: $REG_ROLE"
+fi
+
+# jev_decide without key → ok=false (unless key is set; then still must return structured result)
+JEV1=$(curl_api '{"tool":"jev_decide","args":{"state":"hello","questions":{"u":{"type":"noul","instructions":"urgent?"}}}}')
+if echo "$JEV1" | grep -q '"ok".*false'; then
+  ok "jev_decide without usable key → false"
+elif echo "$JEV1" | grep -q '"ok".*true' && echo "$JEV1" | grep -q 'answers'; then
+  ok "jev_decide with live key → answers"
+else
+  fail "jev_decide: $JEV1"
+fi
+
+# to=auto without key → false (or succeeds if key present)
+SEND_AUTO=$(curl_api '{"tool":"send_message","args":{"from":"test-1","to":"auto","content":"请改首页配色"}}')
+if echo "$SEND_AUTO" | grep -q '"ok".*false'; then
+  ok "send_message to=auto without key → false"
+elif echo "$SEND_AUTO" | grep -q '"ok".*true'; then
+  ok "send_message to=auto with live key"
+else
+  fail "send_message to=auto: $SEND_AUTO"
+fi
+
+# health reports jev flag
+HEALTH=$(curl -s "$API/health")
+if echo "$HEALTH" | grep -q '"jev"'; then
+  ok "health includes jev flag"
+else
+  fail "health missing jev: $HEALTH"
+fi
+
 # ── 4. SSE session lifecycle ──
 echo ""
 echo "── 4. SSE session lifecycle ──"
@@ -215,6 +255,7 @@ fi
 echo ""
 echo "── 5. Cleanup ──"
 curl_api '{"tool":"unregister_agent","args":{"agent_name":"test-1"}}' >/dev/null
+curl_api '{"tool":"unregister_agent","args":{"agent_name":"test-2"}}' >/dev/null
 ok "cleanup done"
 
 # ── Summary ──

@@ -110,11 +110,12 @@ export function getAgents() {
   return result;
 }
 
-export function registerAgent(name, tmuxSession) {
+export function registerAgent(name, tmuxSession, role) {
   const prev = agents.get(name);
   const info = {
     name,
     tmuxSession,
+    role: role?.trim() || prev?.role || "",
     registeredAt: prev?.registeredAt || new Date().toISOString(),
     lastHeartbeat: new Date().toISOString(),
   };
