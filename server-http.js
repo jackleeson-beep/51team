@@ -388,7 +388,7 @@ async function handleJsonRpc(msg) {
   const { id, method, params } = msg;
   switch (method) {
     case "initialize":
-      return { jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", serverInfo: { name: "51team", version: "2.0.0" }, capabilities: { tools: {} } } };
+      return { jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", serverInfo: { name: "51team", version: "2.1.0" }, capabilities: { tools: {} } } };
     case "tools/list":
       return { jsonrpc: "2.0", id, result: { tools: toolDefs } };
     case "tools/call": {
